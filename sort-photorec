@@ -1,0 +1,170 @@
+#!/bin/bash
+
+usage="+-------------------------------------------------------------------------------------+
+| sort-photorec                                                                       |
+| sorts the files recovered by photorec into folders by file extension                |
+| usage:                                                                              |
+| sort-photorec [-v|--verbose] [-q|--quiet] folder_which_contains_recup_dir.*_folders |
++-------------------------------------------------------------------------------------+"
+
+#author info
+author_name="Erik Popp"
+author_website="erikpopp.com"
+
+#settings
+fifo_filename="/var/run/sort-photorec/$$"
+fifo_folder="/var/run/sort-photorec"
+files_without_extensions="No File Extension"
+sorted_files="Sorted Files"
+verbosity=1
+
+
+#logger
+function logger
+{
+	if test -n "$1"
+	then
+		if test "$1" -le "$verbosity"
+		then
+			if test -n "$2"
+			then
+				echo "sort-photorec: $2" 1>&2
+			else
+				echo "sort-photorec: logger: you forgot to specify a log message"
+			fi
+		fi
+	else
+		echo "sort-photorec: logger: you forgot to specify a log level"
+	fi
+}
+
+#make fifo and open it in file descriptor 3 so I can pipe filenames that I'm filtering while still giving feedback through stdout as expected
+#mkdir "$fifo_folder"
+#mkfifo -m 'u=rw,go=' "$fifo_filename"
+
+
+#process arguments
+for argument in $@
+do
+	case "$argument" in
+	-v|--verbose)	let verbosity++
+					logger 0 "increasing verbosity to $verbosity"
+					;;
+	-q|--quiet)		let verbosity--
+					logger 0 "decreasing verbosity to $verbosity"
+					;;
+	*)				if test -d "$argument"
+					then
+						if test -z "$recovered_folder"
+						then
+							logger 1 "sorting recovered files in \"$1\""
+							recovered_folder="$argument"
+						else
+							logger 0 "folder with recovered files already specified (\"$recovered_folder\"), refusing to set a second folder to check"
+							echo "$usage"
+							logger 0 "quitting..."
+							exit
+						fi
+					else
+						logger 0 "\"$argument\" is not a folder, quitting"
+						echo "$usage"
+						exit
+					fi
+	esac
+done
+
+if test -z "$recovered_folder"
+then
+	logger 0 "you forgot to specify the folder that the recovered files are in, quitting"
+	echo "$usage"
+	exit
+fi
+
+
+#process files
+logger 1 "moving to folder with recovered files \"$recovered_folder\""
+pushd "$recovered_folder" 1>&2
+
+if test -d "$sorted_files"
+then
+	logger 0 "folder for sorted files already exists, using it..."
+	logger 1 "am I continuing from a previous run?"
+elif test ! -e "$sorted_files"
+then
+	logger 1 "folder for sorted files (\"$sorted_files\") does not exist, creating it..."
+	mkdir "$sorted_files"
+else
+	logger 0 "something already exists with the name that I use for the folder that I use for sorted files (\"$sorted_files\"), but it's not a directory, quitting..."
+	stat "$sorted_files"
+	exit
+fi
+
+logger 1 "combing through all contents of folder \"$recovered_folder\"..."
+find . | grep -E '^\./recup_dir\.[0-9]+/' |
+while read filename
+do
+	logger 2 "current item: \"$filename\""
+	if test -f "$filename"
+	then
+		logger 2 "current item is a file, processing further..."
+		echo "$filename"
+	elif test -d "$filename"
+	then
+		logger 2 "current item is a folder, not a file. I'll search its contents, but I won't sort the folder by file type."
+		logger 1 "found a folder with recovered files in it: \"$filename\""
+	fi
+done | 
+while read known_to_be_a_file
+do
+	base_filename="$(basename "$known_to_be_a_file")"
+	final_folder=""
+	logger 2 "basename of file is \"$base_filename\""
+
+#file extension sorting magic done here
+	if [[ "$base_filename" = *.* ]]
+	then
+		filename_without_extension="${base_filename%.*}"
+		file_extension="${base_filename##*.}"
+	else
+		filename_without_extension="$base_filename"
+		file_extension=""
+	fi
+
+	logger 2 "filename without extension: \"$filename_without_extension\""
+	logger 2 "file extension: \"$file_extension\""
+
+	if test -n "$file_extension"
+	then
+		logger 2 "file \"$base_filename\" has an extension"
+
+		if ! test -d "$sorted_files/$file_extension"
+		then
+			logger 2 "\"$known_to_be_a_file\" is the first file I've found with extension \"$file_extension\", creating a folder for it"
+			mkdir "$sorted_files/$file_extension"
+		fi
+
+		final_folder="./$sorted_files/$file_extension"
+		logger 2 "moving \"$known_to_be_a_file\" to \"$final_folder\""
+		mv "$known_to_be_a_file" "$final_folder"
+	else
+		final_folder="./$sorted_files/$files_without_extensions"
+
+		if ! test -d "$final_folder"
+		then
+			logger 2 "folder \"$files_without_extensions\" doesn't currently exist, creating it"
+			mkdir -p "$final_folder"
+		fi
+
+		logger 2 "file \"$known_to_be_a_file\" does not have a file extension, moving to folder \"$final_folder\""
+		mv "$known_to_be_a_file" "$final_folder"
+	fi
+
+done
+
+logger 1 "returning to previous working directory"
+popd 1>&2
+
+
+#delete fifo
+#rm "$fifo_filename"
+#rmdir "$fifo_folder"
